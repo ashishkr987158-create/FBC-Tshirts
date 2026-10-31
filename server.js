@@ -24,10 +24,19 @@ CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY, name TEXT NOT NULL, em
 CREATE TABLE IF NOT EXISTS products (id INTEGER PRIMARY KEY, name TEXT NOT NULL, description TEXT DEFAULT '', price INTEGER NOT NULL, image TEXT DEFAULT '', sizes TEXT DEFAULT '["S","M","L","XL","XXL"]', category TEXT DEFAULT 'Graphic Tees', active INTEGER DEFAULT 1, created_at TEXT DEFAULT CURRENT_TIMESTAMP);
 CREATE TABLE IF NOT EXISTS orders (id INTEGER PRIMARY KEY, user_id INTEGER NOT NULL, items_json TEXT NOT NULL, total INTEGER NOT NULL, address_json TEXT NOT NULL, payment_screenshot TEXT, payment_status TEXT DEFAULT 'pending_verification', order_status TEXT DEFAULT 'received', created_at TEXT DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY(user_id) REFERENCES users(id));
 `);
-const count = db.prepare('SELECT COUNT(*) AS n FROM users WHERE role = ?').get('admin').n;
-if (!count && process.env.ADMIN_EMAIL && process.env.ADMIN_PASSWORD) {
+// Ensure the explicitly configured owner account is an admin on every startup.
+// This also upgrades an account that was previously created as a customer.
+if (process.env.ADMIN_EMAIL && process.env.ADMIN_PASSWORD) {
+  const ownerEmail = process.env.ADMIN_EMAIL.trim().toLowerCase();
   const hash = bcrypt.hashSync(process.env.ADMIN_PASSWORD, 12);
-  db.prepare('INSERT INTO users(name,email,phone,password_hash,role) VALUES(?,?,?,?,?)').run(process.env.ADMIN_NAME || 'FBC Owner', process.env.ADMIN_EMAIL.toLowerCase(), process.env.ADMIN_PHONE || '', hash, 'admin');
+  const existingOwner = db.prepare('SELECT id FROM users WHERE email = ?').get(ownerEmail);
+  if (existingOwner) {
+    db.prepare("UPDATE users SET name = ?, phone = ?, password_hash = ?, role = 'admin' WHERE id = ?")
+      .run(process.env.ADMIN_NAME || 'FBC Owner', process.env.ADMIN_PHONE || '', hash, existingOwner.id);
+  } else {
+    db.prepare("INSERT INTO users(name,email,phone,password_hash,role) VALUES(?,?,?,?, 'admin')")
+      .run(process.env.ADMIN_NAME || 'FBC Owner', ownerEmail, process.env.ADMIN_PHONE || '', hash);
+  }
 }
 if (!db.prepare('SELECT COUNT(*) AS n FROM products').get().n) {
   const seed = db.prepare('INSERT INTO products(name,description,price,image,category) VALUES(?,?,?,?,?)');
