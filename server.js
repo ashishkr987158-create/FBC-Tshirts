@@ -11,6 +11,8 @@ const fs = require('fs');
 const nodemailer = require('nodemailer');
 
 const app = express();
+const uploadDir = path.join(__dirname, 'uploads');
+fs.mkdirSync(uploadDir, { recursive: true });
 const PORT = Number(process.env.PORT || 3000);
 const JWT_SECRET = process.env.JWT_SECRET;
 if (!JWT_SECRET || JWT_SECRET.length < 32) {
@@ -75,10 +77,10 @@ app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 app.use(express.static(path.join(__dirname, 'public')));
 
 const storage = multer.diskStorage({
-  destination: (_req, _file, cb) => cb(null, path.join(__dirname, 'uploads')),
+  destination: (_req, _file, cb) => cb(null, uploadDir),
   filename: (_req, file, cb) => cb(null, `${Date.now()}-${Math.random().toString(36).slice(2)}${path.extname(file.originalname).toLowerCase()}`)
 });
-const upload = multer({ storage, limits: { fileSize: 5 * 1024 * 1024 }, fileFilter: (_req, file, cb) => cb(null, ['image/jpeg','image/png','image/webp'].includes(file.mimetype)) });
+const upload = multer({ storage, limits: { fileSize: 5 * 1024 * 1024 }, fileFilter: (_req, file, cb) => ['image/jpeg','image/png','image/webp'].includes(file.mimetype) ? cb(null, true) : cb(new Error('Only JPG, PNG or WEBP photos are allowed.')) });
 function tokenFor(user) { return jwt.sign({ id: user.id, role: user.role }, JWT_SECRET, { expiresIn: '7d' }); }
 function auth(req, res, next) {
   const token = (req.headers.authorization || '').replace(/^Bearer\s+/i, '');
@@ -161,5 +163,12 @@ app.post('/api/admin/products', auth, admin, upload.single('image'), (req,res) =
 });
 app.delete('/api/admin/products/:id', auth, admin, (req,res) => { db.prepare('UPDATE products SET active=0 WHERE id=?').run(Number(req.params.id)); res.json({ok:true}); });
 app.get('/api/admin/customers', auth, admin, (_req,res) => res.json(db.prepare("SELECT id,name,email,phone,created_at FROM users WHERE role='customer' ORDER BY id DESC").all()));
+app.use((err, _req, res, _next) => {
+  console.error('Request failed:', err);
+  const message = err instanceof multer.MulterError
+    ? (err.code === 'LIMIT_FILE_SIZE' ? 'Photo must be 5 MB or smaller.' : err.message)
+    : (err.message || 'Server error while processing the request.');
+  res.status(400).json({ error: message });
+});
 app.get('*', (_req,res) => res.sendFile(path.join(__dirname,'public','index.html')));
 app.listen(PORT, () => console.log(`FBC T-Shirts running at http://localhost:${PORT}`));
