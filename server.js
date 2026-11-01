@@ -23,9 +23,10 @@ const db = new Database('fbc-store.sqlite');
 db.pragma('journal_mode = WAL');
 db.exec(`
 CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY, name TEXT NOT NULL, email TEXT UNIQUE NOT NULL, phone TEXT NOT NULL, password_hash TEXT NOT NULL, role TEXT NOT NULL DEFAULT 'customer', created_at TEXT DEFAULT CURRENT_TIMESTAMP);
-CREATE TABLE IF NOT EXISTS products (id INTEGER PRIMARY KEY, name TEXT NOT NULL, description TEXT DEFAULT '', price INTEGER NOT NULL, image TEXT DEFAULT '', sizes TEXT DEFAULT '["S","M","L","XL","XXL"]', category TEXT DEFAULT 'Graphic Tees', active INTEGER DEFAULT 1, created_at TEXT DEFAULT CURRENT_TIMESTAMP);
+CREATE TABLE IF NOT EXISTS products (id INTEGER PRIMARY KEY, name TEXT NOT NULL, description TEXT DEFAULT '', price INTEGER NOT NULL, image TEXT DEFAULT '', photos TEXT DEFAULT '[]', sizes TEXT DEFAULT '["S","M","L","XL","XXL"]', category TEXT DEFAULT 'Graphic Tees', active INTEGER DEFAULT 1, created_at TEXT DEFAULT CURRENT_TIMESTAMP);
 CREATE TABLE IF NOT EXISTS orders (id INTEGER PRIMARY KEY, user_id INTEGER NOT NULL, items_json TEXT NOT NULL, total INTEGER NOT NULL, address_json TEXT NOT NULL, payment_screenshot TEXT, payment_status TEXT DEFAULT 'pending_verification', order_status TEXT DEFAULT 'received', created_at TEXT DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY(user_id) REFERENCES users(id));
 `);
+try { db.exec("ALTER TABLE products ADD COLUMN photos TEXT DEFAULT '[]'"); } catch (e) { if (!String(e.message).includes('duplicate column')) throw e; }
 // Ensure the explicitly configured owner account is an admin on every startup.
 // This also upgrades an account that was previously created as a customer.
 if (process.env.ADMIN_EMAIL && process.env.ADMIN_PASSWORD) {
@@ -104,7 +105,7 @@ async function sendSms(_to, _message) {
 }
 
 app.get('/api/config', (_req, res) => res.json({ upiId: process.env.UPI_ID || '8595467640@ptaxis', payeeName: process.env.UPI_PAYEE_NAME || 'FBC T-Shirts' }));
-app.get('/api/products', (_req, res) => res.json(db.prepare('SELECT id,name,description,price,image,sizes,category FROM products WHERE active=1 ORDER BY id DESC').all().map(p => ({...p, sizes: JSON.parse(p.sizes)}))));
+app.get('/api/products', (_req, res) => res.json(db.prepare('SELECT id,name,description,price,image,photos,sizes,category FROM products WHERE active=1 ORDER BY id DESC').all().map(p => ({...p, photos: JSON.parse(p.photos || '[]'), sizes: JSON.parse(p.sizes)}))));
 app.post('/api/auth/signup', async (req, res) => {
   const { name, email, phone, password } = req.body || {};
   if (!name || !email || !phone || !password || password.length < 8) return res.status(400).json({ error: 'Enter all details. Password must be at least 8 characters.' });
@@ -154,11 +155,14 @@ app.patch('/api/admin/orders/:id', auth, admin, async (req,res) => {
   if (order) await sendEmail(order.email, `FBC order update #${order.id}`, `Hi ${order.name}, your order #${order.id} is now ${order_status}. Payment status: ${payment_status}.`);
   res.json({ok:true});
 });
-app.post('/api/admin/products', auth, admin, upload.single('image'), (req,res) => {
+app.post('/api/admin/products', auth, admin, upload.array('images', 4), (req,res) => {
   const {name,description,price,category} = req.body || {};
   if (!name || !Number.isFinite(Number(price)) || Number(price)<1) return res.status(400).json({error:'Product name and valid price are required.'});
-  const image = req.file ? `/uploads/${req.file.filename}` : (req.body.image || '');
-  const result = db.prepare('INSERT INTO products(name,description,price,image,category) VALUES(?,?,?,?,?)').run(name,description||'',Number(price),image,category||'Graphic Tees');
+  const photos = (req.files || []).map(file => `/uploads/${file.filename}`);
+  if (!photos.length && req.body.image) photos.push(req.body.image);
+  if (!photos.length) return res.status(400).json({error:'Upload at least one product photo.'});
+  const image = photos[0];
+  const result = db.prepare('INSERT INTO products(name,description,price,image,photos,category) VALUES(?,?,?,?,?,?)').run(name,description||'',Number(price),image,JSON.stringify(photos),category||'Graphic Tees');
   res.json({id:result.lastInsertRowid});
 });
 app.delete('/api/admin/products/:id', auth, admin, (req,res) => { db.prepare('UPDATE products SET active=0 WHERE id=?').run(Number(req.params.id)); res.json({ok:true}); });
